@@ -1,4 +1,4 @@
-const API_BASE = "https://stunning-couscous-4jx7vg95rwj92jxj5-3000.app.github.dev";
+const API_BASE = "https://didactic-space-dollop-7vg95r46xpvj3w5rp-3000.app.github.dev";
 
 const demoProfile = {
   assets: {
