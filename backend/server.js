@@ -1,12 +1,14 @@
-require("dotenv").config();
+import express from "express";
+import cors from "cors";
+import OpenAI from "openai";
+import { google } from "googleapis";
+import { createServer as createViteServer } from "vite";
+import dotenv from "dotenv";
 
-const express = require("express");
-const cors = require("cors");
-const OpenAI = require("openai");
-const { google } = require("googleapis");
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 
 app.use(
   cors({
@@ -51,20 +53,20 @@ function getOAuthClient() {
 /* =========================
    HELPERS
    ========================= */
-function clamp(value, min, max) {
+function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function toNumber(value, fallback = 0) {
+function toNumber(value: any, fallback = 0) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 }
 
-function normaliseName(name) {
+function normaliseName(name: string) {
   return String(name || "").trim().toLowerCase();
 }
 
-function buildFinancialSnapshot(profile = {}) {
+function buildFinancialSnapshot(profile: any = {}) {
   const savings = toNumber(profile.assets?.savings);
   const investments = toNumber(profile.assets?.investments);
   const cpf = toNumber(profile.assets?.cpf);
@@ -100,7 +102,7 @@ function buildFinancialSnapshot(profile = {}) {
   };
 }
 
-function getRuleBasedAdvice(prompt, profile = {}) {
+function getRuleBasedAdvice(prompt: string, profile: any = {}) {
   const s = buildFinancialSnapshot(profile);
   const p = String(prompt || "").toLowerCase();
 
@@ -133,7 +135,7 @@ function getRuleBasedAdvice(prompt, profile = {}) {
   return "Your finances look reasonably stable, but improving emergency runway and keeping recurring spending disciplined would strengthen resilience.";
 }
 
-async function generateAIAdvice({ prompt, profile, mode = "advisor" }) {
+async function generateAIAdvice({ prompt, profile, mode = "advisor" }: { prompt: string, profile: any, mode?: string }) {
   if (!openai || !process.env.OPENAI_MODEL) {
     return {
       source: "rule-based",
@@ -171,9 +173,9 @@ Financial profile:
 ${JSON.stringify(snapshot, null, 2)}
 `;
 
-  const response = await openai.responses.create({
+  const response = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL,
-    input: [
+    messages: [
       {
         role: "system",
         content: systemInstruction
@@ -187,7 +189,7 @@ ${JSON.stringify(snapshot, null, 2)}
 
   return {
     source: "openai",
-    text: response.output_text?.trim() || getRuleBasedAdvice(prompt, profile)
+    text: response.choices[0].message?.content?.trim() || getRuleBasedAdvice(prompt, profile)
   };
 }
 
@@ -195,19 +197,7 @@ ${JSON.stringify(snapshot, null, 2)}
    PROFILE / USER
    ========================= */
 
-/*
-  Save or update a named profile
-  Input:
-  {
-    name,
-    assets,
-    liabilities,
-    monthly,
-    goals,
-    reminders
-  }
-*/
-app.post("/profile", (req, res) => {
+app.post("/api/profile", (req, res) => {
   const name = String(req.body.name || "").trim();
 
   if (!name) {
@@ -231,7 +221,7 @@ app.post("/profile", (req, res) => {
   });
 });
 
-app.get("/profile/:name", (req, res) => {
+app.get("/api/profile/:name", (req, res) => {
   const profile = profiles.get(normaliseName(req.params.name));
 
   if (!profile) {
@@ -241,7 +231,7 @@ app.get("/profile/:name", (req, res) => {
   res.json(profile);
 });
 
-app.get("/profile/:name/net-worth", (req, res) => {
+app.get("/api/profile/:name/net-worth", (req, res) => {
   const profile = profiles.get(normaliseName(req.params.name));
 
   if (!profile) {
@@ -264,7 +254,7 @@ app.get("/profile/:name/net-worth", (req, res) => {
 /* =========================
    HEALTH SCORE
    ========================= */
-app.post("/score", (req, res) => {
+app.post("/api/score", (req, res) => {
   const { assets = {}, liabilities = {}, monthly = {} } = req.body;
 
   const savings = toNumber(assets.savings);
@@ -344,7 +334,7 @@ app.post("/score", (req, res) => {
 /* =========================
    LIFE SHOCK ANALYSIS
    ========================= */
-app.post("/shock", (req, res) => {
+app.post("/api/shock", (req, res) => {
   const scenario = String(req.body.scenario || "").toLowerCase();
 
   const originalSavings = toNumber(req.body.savings);
@@ -477,7 +467,7 @@ app.post("/shock", (req, res) => {
 /* =========================
    BEHAVIOURAL ANALYSIS
    ========================= */
-app.post("/behaviour", async (req, res) => {
+app.post("/api/behaviour", async (req, res) => {
   const { monthly = {}, reminders = [], goals = [], name = "" } = req.body;
 
   const income = toNumber(monthly.income);
@@ -485,9 +475,9 @@ app.post("/behaviour", async (req, res) => {
   const subscriptions = toNumber(monthly.subscriptions);
 
   const savingsRatio = income > 0 ? (income - expenses) / income : 0;
-  const cuttable = reminders.filter((r) => r.type === "Cuttable").length;
-  const flexible = reminders.filter((r) => r.type === "Flexible").length;
-  const lowProgressGoals = goals.filter((g) => {
+  const cuttable = reminders.filter((r: any) => r.type === "Cuttable").length;
+  const flexible = reminders.filter((r: any) => r.type === "Flexible").length;
+  const lowProgressGoals = goals.filter((g: any) => {
     const current = toNumber(g.current);
     const target = toNumber(g.target, 1);
     return current / target < 0.5;
@@ -550,7 +540,7 @@ app.post("/behaviour", async (req, res) => {
 /* =========================
    MACRO IMPACT
    ========================= */
-app.post("/macro", (req, res) => {
+app.post("/api/macro", (req, res) => {
   const scenario = String(req.body.scenario || "").toLowerCase();
 
   const originalInvestments = toNumber(req.body.investments);
@@ -614,14 +604,8 @@ app.post("/macro", (req, res) => {
 
 /* =========================
    AI CHATBOT
-   =========================
-   Input:
-   {
-     name,
-     prompt
-   }
-*/
-app.post("/ai/chat", async (req, res) => {
+   ========================= */
+app.post("/api/ai/chat", async (req, res) => {
   try {
     const name = String(req.body.name || "").trim();
     const prompt = String(req.body.prompt || "").trim();
@@ -654,8 +638,8 @@ app.post("/ai/chat", async (req, res) => {
       source: ai.source,
       snapshot: buildFinancialSnapshot(profile)
     });
-  } catch (error) {
-    console.error("AI /ai/chat error:", error);
+  } catch (error: any) {
+    console.error("AI /api/chat error:", error);
     res.status(500).json({
       error: "Failed to generate AI response."
     });
@@ -664,14 +648,8 @@ app.post("/ai/chat", async (req, res) => {
 
 /* =========================
    GOOGLE CALENDAR CONNECT
-   =========================
-   1) Open:
-      GET /auth/google?name=anjali
-
-   2) Google redirects back to:
-      /auth/google/callback
-*/
-app.get("/auth/google", (req, res) => {
+   ========================= */
+app.get("/api/auth/google", (req, res) => {
   try {
     if (!hasGoogleOAuth) {
       return res.status(500).json({
@@ -703,7 +681,7 @@ app.get("/auth/google", (req, res) => {
   }
 });
 
-app.get("/auth/google/callback", async (req, res) => {
+app.get("/api/auth/google/callback", async (req, res) => {
   try {
     if (!hasGoogleOAuth) {
       return res.status(500).send("Google OAuth is not configured.");
@@ -721,7 +699,7 @@ app.get("/auth/google/callback", async (req, res) => {
 
     googleTokens.set(normaliseName(name), tokens);
 
-    const redirectBase = process.env.FRONTEND_URL || "http://localhost:5173";
+    const redirectBase = process.env.FRONTEND_URL || process.env.APP_URL || "http://localhost:3000";
     return res.redirect(
       `${redirectBase}/?calendar=connected&name=${encodeURIComponent(name)}`
     );
@@ -733,9 +711,8 @@ app.get("/auth/google/callback", async (req, res) => {
 
 /* =========================
    LIST UPCOMING CALENDAR EVENTS
-   GET /calendar/events?name=anjali
    ========================= */
-app.get("/calendar/events", async (req, res) => {
+app.get("/api/calendar/events", async (req, res) => {
   try {
     const name = String(req.query.name || "").trim();
     if (!name) {
@@ -784,16 +761,8 @@ app.get("/calendar/events", async (req, res) => {
 
 /* =========================
    CREATE CALENDAR EVENT
-   Input:
-   {
-     name,
-     summary,
-     description,
-     start, // ISO string
-     end    // ISO string
-   }
    ========================= */
-app.post("/calendar/create-event", async (req, res) => {
+app.post("/api/calendar/create-event", async (req, res) => {
   try {
     const name = String(req.body.name || "").trim();
     const summary = String(req.body.summary || "").trim();
@@ -848,7 +817,7 @@ app.post("/calendar/create-event", async (req, res) => {
 /* =========================
    AI ADVISOR
    ========================= */
-app.post("/advisor", async (req, res) => {
+app.post("/api/advisor", async (req, res) => {
   try {
     const prompt = String(req.body.prompt || "").trim();
     const profile = req.body.profile || {};
@@ -872,7 +841,7 @@ app.post("/advisor", async (req, res) => {
 /* =========================
    DEMO PROFILE
    ========================= */
-app.get("/demo-profile", (req, res) => {
+app.get("/api/demo-profile", (req, res) => {
   res.json({
     name: "Anjali",
     assets: {
@@ -903,11 +872,21 @@ app.get("/demo-profile", (req, res) => {
   });
 });
 
-app.get("/", (req, res) => {
-  res.send("Wealth Wellness Hub backend is running.");
-});
+async function startServer() {
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static("dist"));
+  }
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
 
+startServer();
