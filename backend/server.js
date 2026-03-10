@@ -1,260 +1,41 @@
-import express from "express";
-import cors from "cors";
-import OpenAI from "openai";
-import { google } from "googleapis";
-import { createServer as createViteServer } from "vite";
-import dotenv from "dotenv";
-
-dotenv.config();
+const express = require("express");
+const cors = require("cors");
 
 const app = express();
 const PORT = 3000;
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || "*",
-    credentials: true
-  })
-);
+app.use(cors());
 app.use(express.json());
 
-/* =========================
-   SIMPLE IN-MEMORY STORAGE
-   =========================
-   Replace with a real DB later.
-*/
-const profiles = new Map(); // key: name -> profile object
-const googleTokens = new Map(); // key: name -> tokens
-
-/* =========================
-   OPENAI
-   ========================= */
-const hasOpenAI = Boolean(process.env.OPENAI_API_KEY);
-const openai = hasOpenAI
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
-
-/* =========================
-   GOOGLE CALENDAR
-   ========================= */
-const hasGoogleOAuth =
-  Boolean(process.env.GOOGLE_CLIENT_ID) &&
-  Boolean(process.env.GOOGLE_CLIENT_SECRET) &&
-  Boolean(process.env.GOOGLE_REDIRECT_URI);
-
-function getOAuthClient() {
-  return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI
-  );
-}
-
-/* =========================
-   HELPERS
-   ========================= */
-function clamp(value: number, min: number, max: number) {
+function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function toNumber(value: any, fallback = 0) {
+function toNumber(value, fallback = 0) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 }
 
-function normaliseName(name: string) {
-  return String(name || "").trim().toLowerCase();
-}
-
-function buildFinancialSnapshot(profile: any = {}) {
-  const savings = toNumber(profile.assets?.savings);
-  const investments = toNumber(profile.assets?.investments);
-  const cpf = toNumber(profile.assets?.cpf);
-  const insuranceValue = toNumber(profile.assets?.insuranceValue);
-  const debt = toNumber(profile.liabilities?.debt);
-  const income = toNumber(profile.monthly?.income);
-  const expenses = toNumber(profile.monthly?.expenses);
-  const subscriptions = toNumber(profile.monthly?.subscriptions);
-
-  const totalAssets = savings + investments + cpf + insuranceValue;
-  const netWorth = totalAssets - debt;
-  const runway = expenses > 0 ? savings / expenses : 0;
-  const monthlyBalance = income - expenses;
-  const savingsRate = income > 0 ? ((income - expenses) / income) * 100 : 0;
-
-  return {
-    name: profile.name || "",
-    savings,
-    investments,
-    cpf,
-    insuranceValue,
-    debt,
-    income,
-    expenses,
-    subscriptions,
-    totalAssets: Number(totalAssets.toFixed(2)),
-    netWorth: Number(netWorth.toFixed(2)),
-    runway: Number(runway.toFixed(1)),
-    monthlyBalance: Number(monthlyBalance.toFixed(2)),
-    savingsRate: Number(savingsRate.toFixed(0)),
-    reminders: Array.isArray(profile.reminders) ? profile.reminders : [],
-    goals: Array.isArray(profile.goals) ? profile.goals : []
-  };
-}
-
-function getRuleBasedAdvice(prompt: string, profile: any = {}) {
-  const s = buildFinancialSnapshot(profile);
-  const p = String(prompt || "").toLowerCase();
-
-  if (p.includes("emergency") || p.includes("savings")) {
-    return `You currently have about ${s.runway.toFixed(
-      1
-    )} months of emergency runway. Build this towards at least 6 months if possible.`;
+/*
+  HEALTH SCORE
+  Input shape:
+  {
+    assets: {
+      savings,
+      investments,
+      cpf,
+      insuranceValue
+    },
+    liabilities: {
+      debt
+    },
+    monthly: {
+      income,
+      expenses
+    }
   }
-
-  if (p.includes("debt")) {
-    return `Your current debt is $${s.debt.toLocaleString()}. Prioritise the highest-interest debt first before increasing non-essential spending.`;
-  }
-
-  if (p.includes("invest") || p.includes("portfolio")) {
-    return `You currently hold $${s.investments.toLocaleString()} in investments. Keep your emergency fund stable before taking additional portfolio risk.`;
-  }
-
-  if (p.includes("budget")) {
-    return `Your monthly balance is $${s.monthlyBalance.toLocaleString()}. Review subscriptions and flexible spending first when tightening your budget.`;
-  }
-
-  if (p.includes("net worth")) {
-    return `Your estimated net worth is $${s.netWorth.toLocaleString()}. Increasing assets steadily while controlling debt will improve this over time.`;
-  }
-
-  if (p.includes("behaviour") || p.includes("spending")) {
-    return "Your best behavioural next step is to automate savings right after payday and review recurring subscriptions every month.";
-  }
-
-  return "Your finances look reasonably stable, but improving emergency runway and keeping recurring spending disciplined would strengthen resilience.";
-}
-
-async function generateAIAdvice({ prompt, profile, mode = "advisor" }: { prompt: string, profile: any, mode?: string }) {
-  if (!openai || !process.env.OPENAI_MODEL) {
-    return {
-      source: "rule-based",
-      text: getRuleBasedAdvice(prompt, profile)
-    };
-  }
-
-  const snapshot = buildFinancialSnapshot(profile);
-
-  const systemInstruction =
-    mode === "behaviour"
-      ? `
-You are a practical personal finance coach.
-Give behavioural-finance insights only.
-Focus on habits, overspending patterns, subscription creep, goal prioritisation, automation, and emotional spending.
-Do not make legal, tax, or regulated financial claims.
-Keep the answer concise, specific, and useful.
-Use plain English.
-`
-      : `
-You are a practical personal finance coach.
-Answer based only on the user's financial data.
-Do not invent numbers.
-Focus on resilience, net worth, budget, debt, emergency runway, and goal progress.
-Do not make legal, tax, or regulated financial claims.
-Keep the answer concise, specific, and useful.
-Use plain English.
-`;
-
-  const userInput = `
-User prompt:
-${String(prompt || "")}
-
-Financial profile:
-${JSON.stringify(snapshot, null, 2)}
-`;
-
-  const response = await openai.chat.completions.create({
-    model: process.env.OPENAI_MODEL,
-    messages: [
-      {
-        role: "system",
-        content: systemInstruction
-      },
-      {
-        role: "user",
-        content: userInput
-      }
-    ]
-  });
-
-  return {
-    source: "openai",
-    text: response.choices[0].message?.content?.trim() || getRuleBasedAdvice(prompt, profile)
-  };
-}
-
-/* =========================
-   PROFILE / USER
-   ========================= */
-
-app.post("/api/profile", (req, res) => {
-  const name = String(req.body.name || "").trim();
-
-  if (!name) {
-    return res.status(400).json({ error: "Name is required." });
-  }
-
-  const profile = {
-    name,
-    assets: req.body.assets || {},
-    liabilities: req.body.liabilities || {},
-    monthly: req.body.monthly || {},
-    goals: Array.isArray(req.body.goals) ? req.body.goals : [],
-    reminders: Array.isArray(req.body.reminders) ? req.body.reminders : []
-  };
-
-  profiles.set(normaliseName(name), profile);
-
-  return res.json({
-    message: "Profile saved successfully.",
-    profile
-  });
-});
-
-app.get("/api/profile/:name", (req, res) => {
-  const profile = profiles.get(normaliseName(req.params.name));
-
-  if (!profile) {
-    return res.status(404).json({ error: "Profile not found." });
-  }
-
-  res.json(profile);
-});
-
-app.get("/api/profile/:name/net-worth", (req, res) => {
-  const profile = profiles.get(normaliseName(req.params.name));
-
-  if (!profile) {
-    return res.status(404).json({ error: "Profile not found." });
-  }
-
-  const snapshot = buildFinancialSnapshot(profile);
-
-  res.json({
-    name: profile.name,
-    totalAssets: snapshot.totalAssets,
-    totalDebt: Number(snapshot.debt.toFixed(2)),
-    netWorth: snapshot.netWorth,
-    runway: snapshot.runway,
-    monthlyBalance: snapshot.monthlyBalance,
-    savingsRate: snapshot.savingsRate
-  });
-});
-
-/* =========================
-   HEALTH SCORE
-   ========================= */
-app.post("/api/score", (req, res) => {
+*/
+app.post("/score", (req, res) => {
   const { assets = {}, liabilities = {}, monthly = {} } = req.body;
 
   const savings = toNumber(assets.savings);
@@ -331,10 +112,19 @@ app.post("/api/score", (req, res) => {
   });
 });
 
-/* =========================
-   LIFE SHOCK ANALYSIS
-   ========================= */
-app.post("/api/shock", (req, res) => {
+/*
+  LIFE SHOCK ANALYSIS
+  Input shape:
+  {
+    scenario,
+    savings,
+    investments,
+    income,
+    expenses,
+    debt
+  }
+*/
+app.post("/shock", (req, res) => {
   const scenario = String(req.body.scenario || "").toLowerCase();
 
   const originalSavings = toNumber(req.body.savings);
@@ -409,7 +199,7 @@ app.post("/api/shock", (req, res) => {
       newSavings -= 5000;
       newExpenses += 700;
       insights.push("Support or caregiving responsibilities increase expenses.");
-      insights.push("Some personal goals may need temporary reprioritisation.");
+      insights.push("Some personal goals may need temporary reprioritization.");
       break;
 
     default:
@@ -464,20 +254,30 @@ app.post("/api/shock", (req, res) => {
   });
 });
 
-/* =========================
-   BEHAVIOURAL ANALYSIS
-   ========================= */
-app.post("/api/behaviour", async (req, res) => {
-  const { monthly = {}, reminders = [], goals = [], name = "" } = req.body;
+/*
+  BEHAVIOURAL FINANCE ANALYSIS
+  Input shape:
+  {
+    monthly: {
+      income,
+      expenses,
+      subscriptions
+    },
+    reminders: [{ name, due, type }],
+    goals: [{ name, current, target, deadline }]
+  }
+*/
+app.post("/behaviour", (req, res) => {
+  const { monthly = {}, reminders = [], goals = [] } = req.body;
 
   const income = toNumber(monthly.income);
   const expenses = toNumber(monthly.expenses);
   const subscriptions = toNumber(monthly.subscriptions);
 
   const savingsRatio = income > 0 ? (income - expenses) / income : 0;
-  const cuttable = reminders.filter((r: any) => r.type === "Cuttable").length;
-  const flexible = reminders.filter((r: any) => r.type === "Flexible").length;
-  const lowProgressGoals = goals.filter((g: any) => {
+  const cuttable = reminders.filter((r) => r.type === "Cuttable").length;
+  const flexible = reminders.filter((r) => r.type === "Flexible").length;
+  const lowProgressGoals = goals.filter((g) => {
     const current = toNumber(g.current);
     const target = toNumber(g.target, 1);
     return current / target < 0.5;
@@ -500,47 +300,37 @@ app.post("/api/behaviour", async (req, res) => {
   }
 
   if (flexible > 0) {
-    insights.push(`You also have ${flexible} flexible payment(s) that can be optimised.`);
+    insights.push(`You also have ${flexible} flexible payment(s) that can be optimized.`);
   }
 
   if (lowProgressGoals >= 2) {
-    insights.push("You are pursuing several long-term goals at once, so prioritisation may improve success.");
+    insights.push("You are pursuing several long-term goals at once, so prioritization may improve success.");
   }
 
   insights.push("Automating savings immediately after payday can reduce behavioural overspending.");
   insights.push("Reviewing expenses right after large income days may help control impulse spending.");
-
-  const profile = {
-    name,
-    monthly,
-    reminders,
-    goals,
-    assets: req.body.assets || {},
-    liabilities: req.body.liabilities || {}
-  };
-
-  const ai = await generateAIAdvice({
-    prompt:
-      "Give behavioural finance insights based on this user's spending, subscriptions, reminders, and goal progress.",
-    profile,
-    mode: "behaviour"
-  });
 
   res.json({
     savingsRatio: Number((savingsRatio * 100).toFixed(0)),
     cuttableCount: cuttable,
     flexibleCount: flexible,
     lowProgressGoals,
-    insights,
-    aiBehaviouralInsight: ai.text,
-    aiSource: ai.source
+    insights
   });
 });
 
-/* =========================
-   MACRO IMPACT
-   ========================= */
-app.post("/api/macro", (req, res) => {
+/*
+  MACRO-ECONOMIC IMPACT ANALYSIS
+  Input shape:
+  {
+    scenario,
+    investments,
+    expenses,
+    debt,
+    income
+  }
+*/
+app.post("/macro", (req, res) => {
   const scenario = String(req.body.scenario || "").toLowerCase();
 
   const originalInvestments = toNumber(req.body.investments);
@@ -602,248 +392,70 @@ app.post("/api/macro", (req, res) => {
   });
 });
 
-/* =========================
-   AI CHATBOT
-   ========================= */
-app.post("/api/ai/chat", async (req, res) => {
-  try {
-    const name = String(req.body.name || "").trim();
-    const prompt = String(req.body.prompt || "").trim();
-
-    if (!name) {
-      return res.status(400).json({ error: "Name is required." });
+/*
+  AI ADVISOR
+  Input shape:
+  {
+    prompt,
+    profile: {
+      assets,
+      liabilities,
+      monthly,
+      goals
     }
-
-    if (!prompt) {
-      return res.status(400).json({ error: "Prompt is required." });
-    }
-
-    const profile = profiles.get(normaliseName(name));
-
-    if (!profile) {
-      return res.status(404).json({
-        error: "No saved profile found for this name. Save the profile first."
-      });
-    }
-
-    const ai = await generateAIAdvice({
-      prompt,
-      profile,
-      mode: "advisor"
-    });
-
-    res.json({
-      name,
-      reply: ai.text,
-      source: ai.source,
-      snapshot: buildFinancialSnapshot(profile)
-    });
-  } catch (error: any) {
-    console.error("AI /api/chat error:", error);
-    res.status(500).json({
-      error: "Failed to generate AI response."
-    });
   }
-});
+*/
+app.post("/advisor", (req, res) => {
+  const prompt = String(req.body.prompt || "").toLowerCase();
+  const profile = req.body.profile || {};
 
-/* =========================
-   GOOGLE CALENDAR CONNECT
-   ========================= */
-app.get("/api/auth/google", (req, res) => {
-  try {
-    if (!hasGoogleOAuth) {
-      return res.status(500).json({
-        error: "Google OAuth is not configured in .env"
-      });
-    }
+  const savings = toNumber(profile.assets?.savings);
+  const investments = toNumber(profile.assets?.investments);
+  const cpf = toNumber(profile.assets?.cpf);
+  const insuranceValue = toNumber(profile.assets?.insuranceValue);
+  const debt = toNumber(profile.liabilities?.debt);
+  const income = toNumber(profile.monthly?.income);
+  const expenses = toNumber(profile.monthly?.expenses);
 
-    const name = String(req.query.name || "").trim();
-    if (!name) {
-      return res.status(400).json({ error: "name query parameter is required." });
-    }
+  const totalAssets = savings + investments + cpf + insuranceValue;
+  const netWorth = totalAssets - debt;
+  const runway = expenses > 0 ? savings / expenses : 0;
+  const monthlyBalance = income - expenses;
 
-    const oauth2Client = getOAuthClient();
+  let reply =
+    "Based on your current profile, your financial position is reasonably stable, but there is still room to improve resilience.";
 
-    const authUrl = oauth2Client.generateAuthUrl({
-      access_type: "offline",
-      prompt: "consent",
-      scope: [
-        "https://www.googleapis.com/auth/calendar",
-        "https://www.googleapis.com/auth/calendar.events"
-      ],
-      state: name
-    });
-
-    res.json({ authUrl });
-  } catch (error) {
-    console.error("Google auth error:", error);
-    res.status(500).json({ error: "Failed to start Google authentication." });
+  if (prompt.includes("emergency") || prompt.includes("savings")) {
+    reply = `You currently have about ${runway.toFixed(
+      1
+    )} months of emergency runway. A strong next step would be to build this toward at least 6 months of expenses.`;
+  } else if (prompt.includes("debt")) {
+    reply = `Your current debt is $${debt.toLocaleString()}. Focus on paying down the highest-interest debt first before increasing discretionary spending.`;
+  } else if (prompt.includes("invest") || prompt.includes("portfolio")) {
+    reply = `You currently hold $${investments.toLocaleString()} in investments. Make sure your portfolio is diversified and that your emergency fund is secure before taking additional risk.`;
+  } else if (prompt.includes("budget")) {
+    reply = `Your monthly balance is $${monthlyBalance.toLocaleString()}. Keep fixed expenses controlled and review cuttable subscriptions first when optimizing your budget.`;
+  } else if (prompt.includes("net worth")) {
+    reply = `Your estimated net worth is $${netWorth.toLocaleString()}. Growing assets consistently while controlling debt will improve this over time.`;
+  } else if (prompt.includes("goal")) {
+    reply =
+      "For life goals, break each goal into a target amount, deadline, and required monthly contribution. Prioritize your emergency fund before aggressive long-term goals.";
+  } else if (prompt.includes("shock") || prompt.includes("job loss") || prompt.includes("medical")) {
+    reply =
+      "For shock preparedness, strengthen your emergency fund, reduce non-essential recurring costs, and make sure your insurance coverage is adequate for medical and disability scenarios.";
   }
-});
 
-app.get("/api/auth/google/callback", async (req, res) => {
-  try {
-    if (!hasGoogleOAuth) {
-      return res.status(500).send("Google OAuth is not configured.");
-    }
-
-    const code = String(req.query.code || "");
-    const name = String(req.query.state || "").trim();
-
-    if (!code || !name) {
-      return res.status(400).send("Missing code or state.");
-    }
-
-    const oauth2Client = getOAuthClient();
-    const { tokens } = await oauth2Client.getToken(code);
-
-    googleTokens.set(normaliseName(name), tokens);
-
-    const redirectBase = process.env.FRONTEND_URL || process.env.APP_URL || "http://localhost:3000";
-    return res.redirect(
-      `${redirectBase}/?calendar=connected&name=${encodeURIComponent(name)}`
-    );
-  } catch (error) {
-    console.error("Google callback error:", error);
-    res.status(500).send("Failed to complete Google authentication.");
-  }
-});
-
-/* =========================
-   LIST UPCOMING CALENDAR EVENTS
-   ========================= */
-app.get("/api/calendar/events", async (req, res) => {
-  try {
-    const name = String(req.query.name || "").trim();
-    if (!name) {
-      return res.status(400).json({ error: "name query parameter is required." });
-    }
-
-    const tokens = googleTokens.get(normaliseName(name));
-    if (!tokens) {
-      return res.status(401).json({
-        error: "Google Calendar not connected for this user."
-      });
-    }
-
-    const oauth2Client = getOAuthClient();
-    oauth2Client.setCredentials(tokens);
-
-    const calendar = google.calendar({ version: "v3", auth: oauth2Client });
-
-    const response = await calendar.events.list({
-      calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
-      timeMin: new Date().toISOString(),
-      maxResults: 10,
-      singleEvents: true,
-      orderBy: "startTime"
-    });
-
-    const events = (response.data.items || []).map((event) => ({
-      id: event.id,
-      summary: event.summary || "Untitled Event",
-      description: event.description || "",
-      start: event.start?.dateTime || event.start?.date || null,
-      end: event.end?.dateTime || event.end?.date || null,
-      htmlLink: event.htmlLink || null
-    }));
-
-    res.json({
-      connected: true,
-      count: events.length,
-      events
-    });
-  } catch (error) {
-    console.error("Calendar events error:", error);
-    res.status(500).json({ error: "Failed to fetch calendar events." });
-  }
-});
-
-/* =========================
-   CREATE CALENDAR EVENT
-   ========================= */
-app.post("/api/calendar/create-event", async (req, res) => {
-  try {
-    const name = String(req.body.name || "").trim();
-    const summary = String(req.body.summary || "").trim();
-    const description = String(req.body.description || "").trim();
-    const start = String(req.body.start || "").trim();
-    const end = String(req.body.end || "").trim();
-
-    if (!name || !summary || !start || !end) {
-      return res.status(400).json({
-        error: "name, summary, start and end are required."
-      });
-    }
-
-    const tokens = googleTokens.get(normaliseName(name));
-    if (!tokens) {
-      return res.status(401).json({
-        error: "Google Calendar not connected for this user."
-      });
-    }
-
-    const oauth2Client = getOAuthClient();
-    oauth2Client.setCredentials(tokens);
-
-    const calendar = google.calendar({ version: "v3", auth: oauth2Client });
-
-    const response = await calendar.events.insert({
-      calendarId: process.env.GOOGLE_CALENDAR_ID || "primary",
-      requestBody: {
-        summary,
-        description,
-        start: { dateTime: start },
-        end: { dateTime: end }
-      }
-    });
-
-    res.json({
-      message: "Event created successfully.",
-      event: {
-        id: response.data.id,
-        summary: response.data.summary,
-        htmlLink: response.data.htmlLink,
-        start: response.data.start,
-        end: response.data.end
-      }
-    });
-  } catch (error) {
-    console.error("Create calendar event error:", error);
-    res.status(500).json({ error: "Failed to create calendar event." });
-  }
-});
-
-/* =========================
-   AI ADVISOR
-   ========================= */
-app.post("/api/advisor", async (req, res) => {
-  try {
-    const prompt = String(req.body.prompt || "").trim();
-    const profile = req.body.profile || {};
-
-    const ai = await generateAIAdvice({
-      prompt,
-      profile,
-      mode: "advisor"
-    });
-
-    res.json({
-      reply: ai.text,
-      source: ai.source
-    });
-  } catch (error) {
-    console.error("Advisor error:", error);
-    res.status(500).json({ error: "Failed to generate advisor response." });
-  }
-});
-
-/* =========================
-   DEMO PROFILE
-   ========================= */
-app.get("/api/demo-profile", (req, res) => {
   res.json({
-    name: "Anjali",
+    reply
+  });
+});
+
+/*
+  OPTIONAL: DEMO PROFILE
+  This lets you test from the browser quickly.
+*/
+app.get("/demo-profile", (req, res) => {
+  res.json({
     assets: {
       savings: 18000,
       investments: 24000,
@@ -872,21 +484,13 @@ app.get("/api/demo-profile", (req, res) => {
   });
 });
 
-async function startServer() {
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static("dist"));
-  }
+app.get("/", (req, res) => {
+  res.send("Wealth Wellness Hub backend is running.");
+});
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
 
-startServer();
+
+
