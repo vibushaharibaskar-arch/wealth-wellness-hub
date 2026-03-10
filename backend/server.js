@@ -1,8 +1,14 @@
+require("dotenv").config(); // Load .env into process.env
+
 const express = require("express");
 const cors = require("cors");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+// Optional future imports
+const OpenAI = require("openai");
+// const mongoose = require("mongoose");
+const { google } = require("googleapis");
 
 app.use(cors());
 app.use(express.json());
