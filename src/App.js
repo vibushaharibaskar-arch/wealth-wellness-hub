@@ -4,7 +4,7 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
 } from 'recharts';
 
-const API = "https://legendary-goggles-g4gqr5wjpp5w2v4rr-3000.app.github.dev";
+const API = "Enter backend URL";
 
 async function post(path, body) {
   const r = await fetch(`${API}${path}`, {
