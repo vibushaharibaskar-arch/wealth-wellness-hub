@@ -69,7 +69,7 @@ Wealth Wellness Hub provides:
 -cd backend
 -npm install
 -npm start
-
+paste backend url into App.js, make port visibility public
 -open new terminal
 ### Frontend
 ```bash
