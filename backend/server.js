@@ -21,7 +21,7 @@ function toNumber(value, fallback = 0) {
 }
 
 
-
+/*
  HEALTH SCORE
  Input shape:
  {
@@ -39,7 +39,7 @@ function toNumber(value, fallback = 0) {
      expenses
    }
  }
-
+*/
 app.post("/score", (req, res) => {
  const { assets = {}, liabilities = {}, monthly = {} } = req.body;
 
@@ -128,7 +128,7 @@ app.post("/score", (req, res) => {
 });
 
 
-
+/*
  LIFE SHOCK ANALYSIS
  Input shape:
  {
@@ -139,7 +139,7 @@ app.post("/score", (req, res) => {
    expenses,
    debt
  }
-
+*/
 app.post("/shock", (req, res) => {
  const scenario = String(req.body.scenario || "").toLowerCase();
 
